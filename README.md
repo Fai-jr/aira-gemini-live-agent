@@ -33,7 +33,7 @@ source venv/bin/activate
 
 pip install -r requirements.txt
 
-DISPLAY=:1 uvicorn main:app --port 8000
+uvicorn main:app --port 8000
 
 # Frontend
 
