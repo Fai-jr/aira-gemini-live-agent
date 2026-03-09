@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+*.egg
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Database
+*.sqlite
+*.db
+
+# Logs
+*.log
+logs/
+
+# Node / JS
+node_modules/
+.next/
+out/
+dist/
+build/
+.turbo/
+.cache/
+
+# Expo
+.expo/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Google Cloud
+*.json
+!package.json
+!tsconfig.json
+service-account.json
+
+# Uploads / temp files
+uploads/
+tmp/
+*.tmp

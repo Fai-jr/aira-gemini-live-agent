@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.env
+.env.*
+*.egg-info/
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+.playwright/
+playwright-report/
+test-results/
+
+# Misc
+.DS_Store
+Thumbs.db
+*.log
