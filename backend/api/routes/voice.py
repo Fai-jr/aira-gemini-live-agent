@@ -16,16 +16,17 @@ from agents.goal_planner import GoalPlanner
 from models.user import User
 from models.session import Session
 from services.gemini_vision import GeminiVisionService
-from api.routes.browser import get_browser_agent  # ← THE ONE TRUE BROWSER INSTANCE
+from api.routes.browser import get_browser_agent
+from agents.desktop_agent import DesktopAgent
 
 logger = logging.getLogger("aira.voice_route")
 
 router = APIRouter(prefix="/voice", tags=["Voice"])
 
-# Module-level lock — prevents two concurrent turn_complete calls from both opening Chrome
-_browser_open_lock = asyncio.Lock()
 _last_executed_queries: dict[str, float] = {}
 LAST_ACTION_COOLDOWN_SEC = 90
+
+_desktop_agent = DesktopAgent()
 
 
 async def get_user_from_token(token: str, db: AsyncSession):
@@ -59,6 +60,22 @@ def extract_search_query(aira_text: str) -> str | None:
     return None
 
 
+def extract_music_query(text: str) -> str | None:
+    patterns = [
+        r'play\s+(.+?)\s+(?:on|in)\s+(?:spotify|youtube|music)',
+        r'play\s+(?:the\s+song\s+)?["\'](.+?)["\']',
+        r'play\s+(.+?)(?:\s+by\s+|\s+from\s+|$)',
+        r'(?:search|find)\s+(.+?)\s+(?:on|in)\s+(?:spotify|youtube|music)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text.lower())
+        if match:
+            q = match.group(1).strip().strip('"\'.,')
+            if len(q) > 1:
+                return q
+    return None
+
+
 def extract_url(aira_text: str) -> str | None:
     urls = re.findall(r'https?://[^\s,]+', aira_text)
     if urls:
@@ -67,6 +84,38 @@ def extract_url(aira_text: str) -> str | None:
     if sites:
         return f"https://{sites[0]}"
     return None
+
+
+def classify_command(user_text: str, aira_text: str) -> str:
+    """Returns: 'music' | 'app' | 'browser' | 'none'"""
+    combined = (user_text + " " + aira_text).lower()
+
+    music_platform = _desktop_agent.detect_music_platform(combined)
+    app_key = _desktop_agent.detect_app(combined)
+
+    has_play = "play" in combined
+    has_music_word = any(w in combined for w in ["song", "music", "track", "album", "artist"])
+    has_launch = any(w in combined for w in ["open", "launch", "start", "run"])
+    has_browser_word = any(w in combined for w in [
+        "search", "google", "look up", "find", "navigate", "browse", "website", "url",
+        "going to", "i'll search", "let me search", "searching", "pulling up", "loading"
+    ])
+
+    # Music: play intent + platform or music keyword
+    if (has_play or music_platform) and (music_platform or has_music_word or has_play):
+        # Don't misfire on "play a video on youtube" — that's still music-ish
+        if has_play or music_platform:
+            return "music"
+
+    # App launch: launch keyword + known app (that isn't a browser URL)
+    if app_key and has_launch and "." not in combined.split(app_key)[0][-10:]:
+        return "app"
+
+    # Browser: search/navigation intent
+    if has_browser_word:
+        return "browser"
+
+    return "none"
 
 
 @router.get("/status")
@@ -110,8 +159,6 @@ async def voice_stream(
 
     goal_planner = GoalPlanner()
     vision_service = GeminiVisionService()
-
-    # ── Single browser instance shared across the whole app ──
     browser = get_browser_agent()
 
     aira_text_buffer: list[str] = []
@@ -128,80 +175,125 @@ async def voice_stream(
         if not full_text:
             return
 
-        logger.info(f"AIRA turn complete. Response: {full_text[:100]}")
+        if browser_action_fired[0]:
+            logger.info("turn_complete ignored — action already fired")
+            return
 
-        async with _browser_open_lock:
-            # Double-check inside lock — second concurrent call exits here
-            if browser_action_fired[0]:
-                logger.info("Browser already opened for this command — skipping duplicate")
-                return
+        user_text = last_user_message[0]
+        action_type = classify_command(user_text, full_text)
+        logger.info(f"Command classified as: {action_type} | user='{user_text[:60]}' | aira='{full_text[:60]}'")
 
-            action_words = [
-                "search", "google", "searching", "look up", "looking up",
-                "find", "finding", "open", "opening", "navigate", "navigating",
-                "browse", "browsing", "youtube", "maps", "website", "url",
-                "going to", "i'll", "i will", "let me", "initiating",
-                "executing", "pulling up", "loading", "accessing",
-            ]
-            if not any(w in full_text.lower() for w in action_words):
-                return
+        if action_type == "none":
+            return
 
-            query = extract_search_query(full_text)
-            url = extract_url(full_text)
-            action_key = last_user_message[0].strip().lower() or query or url or full_text[:60]
+        action_key = user_text.strip().lower() or full_text[:60]
+        now = time.time()
+        if now - _last_executed_queries.get(action_key, 0) < LAST_ACTION_COOLDOWN_SEC:
+            logger.info(f"Cooldown active — skipping '{action_key}'")
+            return
 
-            now = time.time()
-            if now - _last_executed_queries.get(action_key, 0) < LAST_ACTION_COOLDOWN_SEC:
-                logger.info(f"Cooldown active for '{action_key}' — skipping")
-                return
+        browser_action_fired[0] = True
+        _last_executed_queries[action_key] = now
+        stale = [k for k, v in _last_executed_queries.items() if now - v > 300]
+        for k in stale:
+            del _last_executed_queries[k]
 
-            # Set flag and timestamp INSIDE lock before any await
-            browser_action_fired[0] = True
-            _last_executed_queries[action_key] = now
-            stale = [k for k, v in _last_executed_queries.items() if now - v > 300]
-            for k in stale:
-                del _last_executed_queries[k]
+        combined = (user_text + " " + full_text).lower()
 
-        # ── Execute browser action OUTSIDE lock ──
-        logger.info(f"Opening Chrome: query={query} url={url}")
         try:
-            # Ensure browser is started
-            if not browser.is_running:
-                await browser.start()
+            # ── MUSIC ──────────────────────────────────────────────────────
+            if action_type == "music":
+                platform = _desktop_agent.detect_music_platform(combined) or "youtube"
+                music_query = (
+                    extract_music_query(user_text)
+                    or extract_music_query(full_text)
+                    or extract_search_query(full_text)
+                    or user_text.strip()
+                )
+                logger.info(f"Music: platform={platform} query={music_query}")
+                result = await _desktop_agent.open_music(platform, music_query, browser)
+                if result.get("success"):
+                    await websocket.send_json({
+                        "type": "goal_plan",
+                        "plan": {
+                            "goal_summary": f"Playing '{music_query}' on {platform}",
+                            "requires_confirmation": False,
+                            "steps": [{
+                                "step": 1,
+                                "action": f"Opened {platform} and searched for '{music_query}'",
+                                "type": "music",
+                                "details": music_query,
+                                "status": "completed",
+                            }],
+                        },
+                    })
+                else:
+                    browser_action_fired[0] = False
+                    _last_executed_queries.pop(action_key, None)
 
-            if "youtube" in full_text.lower() and query:
-                result = await browser.youtube_search(query)
-            elif url:
-                result = await browser.navigate(url)
-            elif query:
-                result = await browser.search_google(query)
-            else:
-                fallback = last_user_message[0] or "search"
-                result = await browser.search_google(fallback)
+            # ── APP LAUNCH ─────────────────────────────────────────────────
+            elif action_type == "app":
+                app_key = _desktop_agent.detect_app(combined)
+                logger.info(f"App launch: {app_key}")
+                result = await _desktop_agent.launch_app(app_key)
+                if result.get("success"):
+                    await websocket.send_json({
+                        "type": "goal_plan",
+                        "plan": {
+                            "goal_summary": f"Launching {app_key}",
+                            "requires_confirmation": False,
+                            "steps": [{
+                                "step": 1,
+                                "action": f"Launched {app_key}",
+                                "type": "app_launch",
+                                "details": app_key,
+                                "status": "completed",
+                            }],
+                        },
+                    })
+                else:
+                    browser_action_fired[0] = False
+                    _last_executed_queries.pop(action_key, None)
 
-            logger.info(f"Browser result: {result}")
+            # ── BROWSER SEARCH / NAVIGATE ──────────────────────────────────
+            elif action_type == "browser":
+                query = extract_search_query(full_text)
+                url = extract_url(full_text)
+                logger.info(f"Browser: query={query} url={url}")
 
-            if result.get("success"):
-                await websocket.send_json({
-                    "type": "goal_plan",
-                    "plan": {
-                        "goal_summary": query or last_user_message[0] or "Browser search",
-                        "requires_confirmation": False,
-                        "steps": [{
-                            "step": 1,
-                            "action": f"Search: {query or last_user_message[0]}",
-                            "type": "search",
-                            "details": query or last_user_message[0],
-                            "status": "completed",
-                        }],
-                    },
-                })
-            else:
-                browser_action_fired[0] = False
-                _last_executed_queries.pop(action_key, None)
+                if not browser.is_running:
+                    await browser.start()
+
+                if "youtube" in combined and query and "music" not in combined:
+                    result = await browser.youtube_search(query)
+                elif url:
+                    result = await browser.navigate(url)
+                elif query:
+                    result = await browser.search_google(query)
+                else:
+                    result = await browser.search_google(user_text)
+
+                if result.get("success"):
+                    await websocket.send_json({
+                        "type": "goal_plan",
+                        "plan": {
+                            "goal_summary": query or user_text or "Browser search",
+                            "requires_confirmation": False,
+                            "steps": [{
+                                "step": 1,
+                                "action": f"Search: {query or user_text}",
+                                "type": "search",
+                                "details": query or user_text,
+                                "status": "completed",
+                            }],
+                        },
+                    })
+                else:
+                    browser_action_fired[0] = False
+                    _last_executed_queries.pop(action_key, None)
 
         except Exception as e:
-            logger.error(f"Browser action failed: {e}")
+            logger.error(f"Action failed [{action_type}]: {e}")
             browser_action_fired[0] = False
             _last_executed_queries.pop(action_key, None)
 
@@ -222,7 +314,8 @@ async def voice_stream(
                     aira_is_processing[0] = True
                     text = response["data"]
                     agent.add_to_transcript("aira", text)
-                    aira_text_buffer.append(text)
+                    if not browser_action_fired[0]:
+                        aira_text_buffer.append(text)
                     await websocket.send_json({
                         "type": "transcript",
                         "role": "aira",
@@ -247,6 +340,7 @@ async def voice_stream(
                 elif rtype == "interrupted":
                     aira_text_buffer.clear()
                     aira_is_processing[0] = False
+                    browser_action_fired[0] = False
                     await websocket.send_json({"type": "interrupted"})
 
                 elif rtype in ("connection_closed", "error"):
