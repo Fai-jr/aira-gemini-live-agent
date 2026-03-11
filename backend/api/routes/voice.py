@@ -61,14 +61,17 @@ def extract_search_query(aira_text: str) -> str | None:
 
 
 def extract_music_query(text: str) -> str | None:
+    t = text.lower().strip()
+    # Strip platform suffix before extracting
+    t = re.sub(r'\s+on\s+(youtube|spotify|music|apple music|tidal)\s*$', '', t)
+    t = re.sub(r'\s+in\s+(youtube|spotify|music|apple music|tidal)\s*$', '', t)
     patterns = [
-        r'play\s+(.+?)\s+(?:on|in)\s+(?:spotify|youtube|music)',
-        r'play\s+(?:the\s+song\s+)?["\'](.+?)["\']',
-        r'play\s+(.+?)(?:\s+by\s+|\s+from\s+|$)',
-        r'(?:search|find)\s+(.+?)\s+(?:on|in)\s+(?:spotify|youtube|music)',
+        r'play\s+(?:me\s+)?(?:the\s+song\s+)?["\'"](.+?)["\'"]',
+        r'play\s+(?:me\s+)?(.+)',
+        r'(?:search|find)\s+(.+)',
     ]
     for pattern in patterns:
-        match = re.search(pattern, text.lower())
+        match = re.search(pattern, t)
         if match:
             q = match.group(1).strip().strip('"\'.,')
             if len(q) > 1:
@@ -103,7 +106,6 @@ def classify_command(user_text: str, aira_text: str) -> str:
 
     # Music: play intent + platform or music keyword
     if (has_play or music_platform) and (music_platform or has_music_word or has_play):
-        # Don't misfire on "play a video on youtube" — that's still music-ish
         if has_play or music_platform:
             return "music"
 
@@ -204,23 +206,36 @@ async def voice_stream(
             # ── MUSIC ──────────────────────────────────────────────────────
             if action_type == "music":
                 platform = _desktop_agent.detect_music_platform(combined) or "youtube"
-                music_query = (
-                    extract_music_query(user_text)
-                    or extract_music_query(full_text)
-                    or extract_search_query(full_text)
-                    or user_text.strip()
-                )
+                # Use user_text only — if empty, extract short quoted phrase from full_text
+                music_query = extract_music_query(user_text) or user_text.strip()
+                if not music_query or len(music_query) > 100:
+                    quoted = re.findall(r'"([^"]{2,60})"', full_text)
+                    music_query = quoted[0] if quoted else None
+                if not music_query or len(music_query) > 100:
+                    logger.warning(f"Bad music_query: {music_query!r} — aborting")
+                    browser_action_fired[0] = False
+                    _last_executed_queries.pop(action_key, None)
+                    return
                 logger.info(f"Music: platform={platform} query={music_query}")
-                result = await _desktop_agent.open_music(platform, music_query, browser)
+
+                if not browser.is_running:
+                    await browser.start()
+
+                if platform == "youtube":
+                    result = await browser.play_youtube(music_query)
+                else:
+                    result = await _desktop_agent.open_music(platform, music_query, browser)
+
                 if result.get("success"):
+                    await browser.keep_alive()
                     await websocket.send_json({
                         "type": "goal_plan",
                         "plan": {
-                            "goal_summary": f"Playing '{music_query}' on {platform}",
+                            "goal_summary": f"Here are the results for '{music_query}' on {platform}",
                             "requires_confirmation": False,
                             "steps": [{
                                 "step": 1,
-                                "action": f"Opened {platform} and searched for '{music_query}'",
+                                "action": f"Searched {platform} for '{music_query}' — click a result to play",
                                 "type": "music",
                                 "details": music_query,
                                 "status": "completed",

@@ -2,6 +2,7 @@ import asyncio
 import base64
 import logging
 import os
+import re
 import subprocess
 from urllib.parse import quote_plus
 from typing import Optional
@@ -36,6 +37,11 @@ class BrowserAgent:
                     "--start-maximized",
                     "--disable-infobars",
                     "--disable-blink-features=AutomationControlled",
+                    "--autoplay-policy=no-user-gesture-required",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                    "--disable-features=site-per-process",
                 ],
             )
 
@@ -90,6 +96,40 @@ class BrowserAgent:
         except Exception as e:
             logger.debug(f"bring_to_front: {e}")
 
+    async def keep_alive(self):
+        """Prevent Chrome from throttling or pausing the tab."""
+        try:
+            if self._page:
+                await self._page.bring_to_front()
+                await self._page.evaluate("""
+                    () => {
+                        window.focus();
+                        const video = document.querySelector('video');
+                        if (video && video.paused) {
+                            video.play().catch(() => {});
+                        }
+                    }
+                """)
+        except Exception as e:
+            logger.debug(f"keep_alive: {e}")
+
+    async def play_youtube(self, query: str) -> dict:
+        """Search YouTube and show results — user picks and plays manually."""
+        await self._ensure_running()
+        try:
+            query = query.strip().rstrip('.,!?')
+            search_url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+            logger.info(f"YouTube search results: {search_url}")
+            await self._page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
+            await self._page.bring_to_front()
+            await self._page.wait_for_selector("ytd-video-renderer", timeout=15000)
+            title = await self._page.title()
+            logger.info(f"Showing results for: {query}")
+            return {"success": True, "url": self._page.url, "title": title}
+        except Exception as e:
+            logger.error(f"play_youtube failed: {e}")
+            return {"success": False, "error": str(e)}
+
     async def _cleanup_dead(self):
         for obj, method in [
             (self._context, "close"),
@@ -137,7 +177,6 @@ class BrowserAgent:
         """Navigate directly to Google search results URL — no typing, no redirects."""
         await self._ensure_running()
         try:
-            # Strip trailing punctuation from query
             query = query.strip().rstrip('.,!?')
             search_url = f"https://www.google.com/search?q={quote_plus(query)}"
             logger.info(f"Navigating directly to: {search_url}")
