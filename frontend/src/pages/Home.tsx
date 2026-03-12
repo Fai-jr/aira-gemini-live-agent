@@ -7,6 +7,7 @@ import { AiraGoalPanel } from '../components/AIRA/AiraGoalPanel'
 import { MemoryPanel } from '../components/AIRA/MemoryPanel'
 import { useNavigate } from 'react-router-dom'
 import { ScreenCapture } from '../components/Screen/ScreenCapture'
+import { GestureScroll } from '../components/AIRA/GestureScroll'
 
 export default function Home() {
   const { user, transcript, currentGoal, setCurrentGoal, error, logout } = useAiraStore()
@@ -15,9 +16,6 @@ export default function Home() {
   const [isActive, setIsActive] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
 
-  // ── Interruption toggle state ──────────────────────────────────────────
-  // true  = AIRA listens in background and can be interrupted mid-sentence
-  // false = AIRA finishes speaking fully before listening again
   const [interruptionsEnabled, setInterruptionsEnabled] = useState(true)
 
   const navigate = useNavigate()
@@ -33,13 +31,9 @@ export default function Home() {
     }
   }
 
-  // ── Toggle interruptions and notify backend ────────────────────────────
   const handleToggleInterruptions = () => {
     const newValue = !interruptionsEnabled
     setInterruptionsEnabled(newValue)
-
-    // Tell the backend via WebSocket
-    // sendMessage sends any JSON object through the active WS connection
     sendMessage({ type: 'set_interruptions', enabled: newValue })
   }
 
@@ -68,7 +62,6 @@ export default function Home() {
     navigate('/auth')
   }
 
-  // Grid columns — memory panel takes full right side when open
   const gridColumns = showMemory
     ? '1fr 360px'
     : isActive && currentGoal
@@ -129,7 +122,6 @@ export default function Home() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          {/* Status indicator */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
@@ -159,8 +151,6 @@ export default function Home() {
             {status.charAt(0).toUpperCase() + status.slice(1)}
           </div>
 
-          {/* ── Interruption Toggle Switch ─────────────────────────────── */}
-          {/* Only shown when a session is active — no point showing it when idle */}
           {isActive && (
             <div
               title={
@@ -181,20 +171,18 @@ export default function Home() {
               }}
               onClick={handleToggleInterruptions}
             >
-              {/* Toggle pill */}
               <div style={{
                 width: '36px',
                 height: '20px',
                 borderRadius: '10px',
                 background: interruptionsEnabled
-                  ? 'var(--aira-accent-primary)'   // purple = ON
-                  : 'var(--aira-bg-surface, #333)', // dark = OFF
+                  ? 'var(--aira-accent-primary)'
+                  : 'var(--aira-bg-surface, #333)',
                 position: 'relative',
                 transition: 'background 0.25s ease',
                 flexShrink: 0,
                 border: '1px solid rgba(255,255,255,0.1)',
               }}>
-                {/* Toggle knob */}
                 <div style={{
                   position: 'absolute',
                   top: '2px',
@@ -207,8 +195,6 @@ export default function Home() {
                   boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
                 }} />
               </div>
-
-              {/* Label */}
               <span style={{
                 fontSize: '12px',
                 color: interruptionsEnabled
@@ -223,7 +209,6 @@ export default function Home() {
             </div>
           )}
 
-          {/* Memory toggle button */}
           <button
             onClick={() => setShowMemory(!showMemory)}
             title="View AIRA's memories"
@@ -241,7 +226,6 @@ export default function Home() {
              Memory
           </button>
 
-          {/* Share Screen toggle button */}
           <button
             onClick={sendScreenshot}
             title={isScreenSharing ? 'Stop sharing screen' : 'Share screen with AIRA'}
@@ -271,7 +255,6 @@ export default function Home() {
             {isScreenSharing ? '⏹ Stop Sharing' : '🖥️ Share Screen'}
           </button>
 
-          {/* User menu */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
@@ -325,7 +308,6 @@ export default function Home() {
         overflow: 'hidden',
         position: 'relative',
       }}>
-        {/* Error banner */}
         {error && (
           <div style={{
             width: '100%',
@@ -343,12 +325,10 @@ export default function Home() {
           </div>
         )}
 
-        {/* AIRA Orb */}
         <div style={{ marginBottom: '12px' }}>
           <AiraOrb status={status} onClick={handleOrbClick} />
         </div>
 
-        {/* Orb hint text */}
         <div style={{
           fontSize: '11px',
           fontWeight: 600,
@@ -366,7 +346,6 @@ export default function Home() {
           {getOrbHint()}
         </div>
 
-        {/* Greeting when idle */}
         {!isActive && transcript.length === 0 && (
           <div style={{
             textAlign: 'center',
@@ -391,7 +370,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Transcript */}
         {transcript.length > 0 && (
           <div className="glass" style={{
             width: '100%',
@@ -419,7 +397,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Text input */}
         {isActive && (
           <div
             className="glass"
@@ -466,7 +443,7 @@ export default function Home() {
         )}
       </main>
 
-      {/* Memory panel sidebar */}
+      {/* Memory panel */}
       {showMemory && (
         <aside style={{
           padding: '24px 16px',
@@ -493,7 +470,7 @@ export default function Home() {
         </aside>
       )}
 
-      {/* Goal panel sidebar */}
+      {/* Goal panel */}
       {currentGoal && !showMemory && (
         <aside style={{
           padding: '24px 16px 24px 0',
@@ -506,6 +483,9 @@ export default function Home() {
           />
         </aside>
       )}
+
+      {/* 🤚 Gesture Scroll — floating bottom-right, always available */}
+      <GestureScroll />
     </div>
   )
 }

@@ -22,28 +22,44 @@ class BrowserAgent:
         self._is_running = False
         self._start_lock = asyncio.Lock()
 
-    async def start(self) -> bool:
+    async def start(self, browser: str = "chromium") -> bool:
         try:
             await self._cleanup_dead()
             os.environ["DISPLAY"] = os.environ.get("DISPLAY", ":1")
 
             self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(
-                headless=False,
-                env={"DISPLAY": os.environ.get("DISPLAY", ":1")},
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--start-maximized",
-                    "--disable-infobars",
-                    "--disable-blink-features=AutomationControlled",
-                    "--autoplay-policy=no-user-gesture-required",
-                    "--disable-background-timer-throttling",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                    "--disable-features=site-per-process",
-                ],
-            )
+
+            common_args = [
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--start-maximized",
+                "--disable-infobars",
+                "--disable-blink-features=AutomationControlled",
+                "--autoplay-policy=no-user-gesture-required",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-features=site-per-process",
+                "--enable-audio",
+                "--allow-running-insecure-content",
+                "--use-fake-ui-for-media-stream",
+            ]
+
+            executable = self._find_executable(browser) if browser != "chromium" else None
+
+            if browser == "firefox" and executable:
+                self._browser = await self._playwright.firefox.launch(
+                    headless=False,
+                    executable_path=executable,
+                    env={"DISPLAY": os.environ.get("DISPLAY", ":1")},
+                )
+            else:
+                self._browser = await self._playwright.chromium.launch(
+                    headless=False,
+                    executable_path=executable,
+                    env={"DISPLAY": os.environ.get("DISPLAY", ":1")},
+                    args=common_args,
+                )
 
             self._context = await self._browser.new_context(
                 viewport=None,
@@ -68,12 +84,30 @@ class BrowserAgent:
             self._is_running = True
             await self._bring_to_front()
 
-            logger.info(f"Browser started on DISPLAY={os.environ.get('DISPLAY')}")
+            logger.info(f"Browser started ({browser}) on DISPLAY={os.environ.get('DISPLAY')}")
             return True
         except Exception as e:
             logger.error(f"Failed to start browser: {e}")
             self._is_running = False
             return False
+
+    def _find_executable(self, browser: str) -> str | None:
+        candidates = {
+            "chrome": [
+                "/usr/bin/google-chrome",
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/chromium",
+            ],
+            "firefox": [
+                "/usr/bin/firefox",
+                "/usr/bin/firefox-esr",
+            ],
+        }
+        for path in candidates.get(browser, []):
+            if os.path.exists(path):
+                return path
+        return None
 
     async def _bring_to_front(self):
         try:
@@ -82,7 +116,9 @@ class BrowserAgent:
             await asyncio.sleep(0.3)
             for cmd in [
                 ["wmctrl", "-a", "Chromium"],
+                ["wmctrl", "-a", "Chrome"],
                 ["xdotool", "search", "--name", "Chromium", "windowactivate"],
+                ["xdotool", "search", "--name", "Chrome", "windowactivate"],
             ]:
                 try:
                     subprocess.Popen(
@@ -114,18 +150,57 @@ class BrowserAgent:
             logger.debug(f"keep_alive: {e}")
 
     async def play_youtube(self, query: str) -> dict:
-        """Search YouTube and show results — user picks and plays manually."""
+        """Search YouTube, extract video ID, navigate directly to watch URL."""
         await self._ensure_running()
         try:
             query = query.strip().rstrip('.,!?')
             search_url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
-            logger.info(f"YouTube search results: {search_url}")
+            logger.info(f"YouTube search: {search_url}")
+
             await self._page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
             await self._page.bring_to_front()
             await self._page.wait_for_selector("ytd-video-renderer", timeout=15000)
+            await asyncio.sleep(1)
+
+            video_id = await self._page.evaluate("""
+                () => {
+                    const links = document.querySelectorAll(
+                        'ytd-video-renderer a#video-title, ytd-video-renderer a[href*="watch"]'
+                    );
+                    for (const a of links) {
+                        const href = a.getAttribute('href') || '';
+                        const match = href.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+                        if (match) return match[1];
+                    }
+                    return null;
+                }
+            """)
+
+            if not video_id:
+                logger.warning("Could not extract video ID, falling back to clicking")
+                first_video = self._page.locator("ytd-video-renderer #video-title").first
+                await first_video.click()
+            else:
+                watch_url = f"https://www.youtube.com/watch?v={video_id}"
+                logger.info(f"Navigating directly to: {watch_url}")
+                await self._page.goto(watch_url, wait_until="domcontentloaded", timeout=15000)
+
+            await self._page.wait_for_selector("video", timeout=20000)
+            await asyncio.sleep(2)
+            await self._page.evaluate("""
+                () => {
+                    const video = document.querySelector('video');
+                    if (video) {
+                        video.muted = false;
+                        video.play().catch(e => console.log('play error:', e));
+                    }
+                }
+            """)
+            await self._page.bring_to_front()
             title = await self._page.title()
-            logger.info(f"Showing results for: {query}")
+            logger.info(f"Now playing: {title}")
             return {"success": True, "url": self._page.url, "title": title}
+
         except Exception as e:
             logger.error(f"play_youtube failed: {e}")
             return {"success": False, "error": str(e)}
@@ -174,7 +249,6 @@ class BrowserAgent:
         return self._is_running and self._page is not None
 
     async def search_google(self, query: str) -> dict:
-        """Navigate directly to Google search results URL — no typing, no redirects."""
         await self._ensure_running()
         try:
             query = query.strip().rstrip('.,!?')
@@ -185,7 +259,6 @@ class BrowserAgent:
             await asyncio.sleep(0.5)
             title = await self._page.title()
             final_url = self._page.url
-            logger.info(f"Search landed on: {final_url}")
             return {"success": True, "query": query, "url": final_url, "title": title}
         except Exception as e:
             logger.error(f"search_google failed: {e}")

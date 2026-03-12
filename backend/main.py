@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from core.config import settings
 from core.database import init_db
-from api.routes import auth, session, memory, voice, vision
+from api.routes import auth, session, memory, voice, vision, gesture_scroll
 from api.routes.browser import router as browser_router, get_browser_agent
 
 logging.basicConfig(
@@ -83,6 +83,7 @@ app.include_router(memory.router, prefix="/api/v1")
 app.include_router(voice.router, prefix="/api/v1")
 app.include_router(vision.router, prefix="/api/v1")
 app.include_router(browser_router, prefix="/api/v1")
+app.include_router(gesture_scroll.router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["Health"])

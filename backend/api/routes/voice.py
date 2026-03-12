@@ -218,8 +218,15 @@ async def voice_stream(
                     return
                 logger.info(f"Music: platform={platform} query={music_query}")
 
+                # Detect if user specified a browser
+                browser_pref = "chrome"
+                for b, keywords in [("chrome", ["google chrome", "chrome"]), ("firefox", ["firefox"]), ("edge", ["edge", "microsoft edge"])]:
+                    if any(k in combined for k in keywords):
+                        browser_pref = b
+                        break
+
                 if not browser.is_running:
-                    await browser.start()
+                    await browser.start(browser=browser_pref)
 
                 if platform == "youtube":
                     result = await browser.play_youtube(music_query)
@@ -276,8 +283,13 @@ async def voice_stream(
                 url = extract_url(full_text)
                 logger.info(f"Browser: query={query} url={url}")
 
+                browser_pref = "chrome"
+                for b, keywords in [("chrome", ["google chrome", "chrome"]), ("firefox", ["firefox"]), ("edge", ["edge", "microsoft edge"])]:
+                    if any(k in combined for k in keywords):
+                        browser_pref = b
+                        break
                 if not browser.is_running:
-                    await browser.start()
+                    await browser.start(browser=browser_pref)
 
                 if "youtube" in combined and query and "music" not in combined:
                     result = await browser.youtube_search(query)
