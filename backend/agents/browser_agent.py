@@ -2,7 +2,6 @@ import asyncio
 import base64
 import logging
 import os
-import re
 import subprocess
 from urllib.parse import quote_plus
 from typing import Optional
@@ -22,74 +21,9 @@ class BrowserAgent:
         self._is_running = False
         self._start_lock = asyncio.Lock()
 
-    async def start(self, browser: str = "chromium") -> bool:
-        try:
-            await self._cleanup_dead()
-            os.environ["DISPLAY"] = os.environ.get("DISPLAY", ":1")
-
-            self._playwright = await async_playwright().start()
-
-            common_args = [
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--start-maximized",
-                "--disable-infobars",
-                "--disable-blink-features=AutomationControlled",
-                "--autoplay-policy=no-user-gesture-required",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--disable-features=site-per-process",
-                "--enable-audio",
-                "--allow-running-insecure-content",
-                "--use-fake-ui-for-media-stream",
-            ]
-
-            executable = self._find_executable(browser) if browser != "chromium" else None
-
-            if browser == "firefox" and executable:
-                self._browser = await self._playwright.firefox.launch(
-                    headless=False,
-                    executable_path=executable,
-                    env={"DISPLAY": os.environ.get("DISPLAY", ":1")},
-                )
-            else:
-                self._browser = await self._playwright.chromium.launch(
-                    headless=False,
-                    executable_path=executable,
-                    env={"DISPLAY": os.environ.get("DISPLAY", ":1")},
-                    args=common_args,
-                )
-
-            self._context = await self._browser.new_context(
-                viewport=None,
-                user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                ),
-                locale="en-US",
-                timezone_id="America/New_York",
-                permissions=["geolocation"],
-                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-            )
-
-            await self._context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-                window.chrome = { runtime: {} };
-            """)
-
-            self._page = await self._context.new_page()
-            self._is_running = True
-            await self._bring_to_front()
-
-            logger.info(f"Browser started ({browser}) on DISPLAY={os.environ.get('DISPLAY')}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start browser: {e}")
-            self._is_running = False
-            return False
+    # ------------------------------------------------------------------ #
+    #  INTERNAL HELPERS                                                    #
+    # ------------------------------------------------------------------ #
 
     def _find_executable(self, browser: str) -> str | None:
         candidates = {
@@ -108,6 +42,15 @@ class BrowserAgent:
             if os.path.exists(path):
                 return path
         return None
+
+    async def _is_page_alive(self) -> bool:
+        if not self._page:
+            return False
+        try:
+            await self._page.evaluate("() => true")
+            return True
+        except Exception:
+            return False
 
     async def _bring_to_front(self):
         try:
@@ -132,79 +75,6 @@ class BrowserAgent:
         except Exception as e:
             logger.debug(f"bring_to_front: {e}")
 
-    async def keep_alive(self):
-        """Prevent Chrome from throttling or pausing the tab."""
-        try:
-            if self._page:
-                await self._page.bring_to_front()
-                await self._page.evaluate("""
-                    () => {
-                        window.focus();
-                        const video = document.querySelector('video');
-                        if (video && video.paused) {
-                            video.play().catch(() => {});
-                        }
-                    }
-                """)
-        except Exception as e:
-            logger.debug(f"keep_alive: {e}")
-
-    async def play_youtube(self, query: str) -> dict:
-        """Search YouTube, extract video ID, navigate directly to watch URL."""
-        await self._ensure_running()
-        try:
-            query = query.strip().rstrip('.,!?')
-            search_url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
-            logger.info(f"YouTube search: {search_url}")
-
-            await self._page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
-            await self._page.bring_to_front()
-            await self._page.wait_for_selector("ytd-video-renderer", timeout=15000)
-            await asyncio.sleep(1)
-
-            video_id = await self._page.evaluate("""
-                () => {
-                    const links = document.querySelectorAll(
-                        'ytd-video-renderer a#video-title, ytd-video-renderer a[href*="watch"]'
-                    );
-                    for (const a of links) {
-                        const href = a.getAttribute('href') || '';
-                        const match = href.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
-                        if (match) return match[1];
-                    }
-                    return null;
-                }
-            """)
-
-            if not video_id:
-                logger.warning("Could not extract video ID, falling back to clicking")
-                first_video = self._page.locator("ytd-video-renderer #video-title").first
-                await first_video.click()
-            else:
-                watch_url = f"https://www.youtube.com/watch?v={video_id}"
-                logger.info(f"Navigating directly to: {watch_url}")
-                await self._page.goto(watch_url, wait_until="domcontentloaded", timeout=15000)
-
-            await self._page.wait_for_selector("video", timeout=20000)
-            await asyncio.sleep(2)
-            await self._page.evaluate("""
-                () => {
-                    const video = document.querySelector('video');
-                    if (video) {
-                        video.muted = false;
-                        video.play().catch(e => console.log('play error:', e));
-                    }
-                }
-            """)
-            await self._page.bring_to_front()
-            title = await self._page.title()
-            logger.info(f"Now playing: {title}")
-            return {"success": True, "url": self._page.url, "title": title}
-
-        except Exception as e:
-            logger.error(f"play_youtube failed: {e}")
-            return {"success": False, "error": str(e)}
-
     async def _cleanup_dead(self):
         for obj, method in [
             (self._context, "close"),
@@ -222,68 +92,175 @@ class BrowserAgent:
         self._page = None
         self._is_running = False
 
+    async def _get_page(self) -> Page:
+        """Return the single active page, starting the browser if needed. Never creates extra tabs."""
+        async with self._start_lock:
+            if not await self._is_page_alive():
+                logger.info("Page not alive — starting browser...")
+                await self._cleanup_dead()
+                await self._start_internal()
+            return self._page
+
+    async def _start_internal(self, browser: str = "chromium"):
+        os.environ["DISPLAY"] = os.environ.get("DISPLAY", ":1")
+        self._playwright = await async_playwright().start()
+
+        common_args = [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--start-maximized",
+            "--disable-infobars",
+            "--disable-blink-features=AutomationControlled",
+            "--autoplay-policy=no-user-gesture-required",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-features=site-per-process",
+            "--enable-audio",
+            "--allow-running-insecure-content",
+            "--use-fake-ui-for-media-stream",
+        ]
+
+        executable = self._find_executable(browser) if browser != "chromium" else None
+
+        if browser == "firefox" and executable:
+            self._browser = await self._playwright.firefox.launch(
+                headless=False,
+                executable_path=executable,
+                env={"DISPLAY": os.environ.get("DISPLAY", ":1")},
+            )
+            self._context = await self._browser.new_context(viewport=None)
+        else:
+            self._browser = await self._playwright.chromium.launch(
+                headless=False,
+                executable_path=executable,
+                env={"DISPLAY": os.environ.get("DISPLAY", ":1")},
+                args=common_args,
+            )
+            self._context = await self._browser.new_context(
+                viewport=None,
+                user_agent=(
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                ),
+                locale="en-US",
+                timezone_id="America/New_York",
+                permissions=["geolocation"],
+                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+            )
+
+        await self._context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            window.chrome = { runtime: {} };
+        """)
+
+        self._page = await self._context.new_page()
+        self._is_running = True
+        await self._bring_to_front()
+        logger.info(f"Browser started ({browser}) on DISPLAY={os.environ.get('DISPLAY')}")
+
+    # ------------------------------------------------------------------ #
+    #  PUBLIC API                                                          #
+    # ------------------------------------------------------------------ #
+
+    async def start(self, browser: str = "chromium") -> bool:
+        try:
+            async with self._start_lock:
+                if await self._is_page_alive():
+                    return True
+                await self._cleanup_dead()
+                await self._start_internal(browser)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start browser: {e}")
+            self._is_running = False
+            return False
+
     async def stop(self):
         await self._cleanup_dead()
         logger.info("Browser agent stopped")
-
-    async def _is_page_alive(self) -> bool:
-        if not self._page:
-            return False
-        try:
-            await self._page.evaluate("() => true")
-            return True
-        except Exception:
-            return False
-
-    async def _ensure_running(self):
-        async with self._start_lock:
-            if not await self._is_page_alive():
-                logger.info("Browser not alive — restarting...")
-                self._is_running = False
-                await self.start()
-            else:
-                await self._bring_to_front()
 
     @property
     def is_running(self) -> bool:
         return self._is_running and self._page is not None
 
-    async def search_google(self, query: str) -> dict:
-        await self._ensure_running()
+    async def keep_alive(self):
         try:
-            query = query.strip().rstrip('.,!?')
-            search_url = f"https://www.google.com/search?q={quote_plus(query)}"
-            logger.info(f"Navigating directly to: {search_url}")
-            await self._page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
-            await self._page.bring_to_front()
-            await asyncio.sleep(0.5)
-            title = await self._page.title()
-            final_url = self._page.url
-            return {"success": True, "query": query, "url": final_url, "title": title}
+            page = await self._get_page()
+            await page.bring_to_front()
+            await page.evaluate("() => { window.focus(); }")
         except Exception as e:
-            logger.error(f"search_google failed: {e}")
-            return {"success": False, "error": str(e)}
+            logger.debug(f"keep_alive: {e}")
+
+    # ------------------------------------------------------------------ #
+    #  NAVIGATION                                                          #
+    # ------------------------------------------------------------------ #
 
     async def navigate(self, url: str) -> dict:
-        await self._ensure_running()
+        page = await self._get_page()
         try:
             if not url.startswith("http"):
                 url = f"https://{url}"
-            await self._page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            await self._page.bring_to_front()
-            await asyncio.sleep(0.5)
-            title = await self._page.title()
-            return {"success": True, "url": self._page.url, "title": title}
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.bring_to_front()
+            title = await page.title()
+            return {"success": True, "url": page.url, "title": title}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def search_google(self, query: str) -> dict:
+        page = await self._get_page()
+        try:
+            query = query.strip().rstrip('.,!?')
+            url = f"https://www.google.com/search?q={quote_plus(query)}"
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.bring_to_front()
+            title = await page.title()
+            return {"success": True, "query": query, "url": page.url, "title": title}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def youtube_search(self, query: str) -> dict:
+        """Show YouTube search results — user picks what to play."""
+        page = await self._get_page()
+        try:
+            query = query.strip().rstrip('.,!?')
+            url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+            logger.info(f"YouTube search: {url}")
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.bring_to_front()
+            await asyncio.sleep(1)
+            title = await page.title()
+            return {"success": True, "query": query, "url": page.url, "title": title}
+        except Exception as e:
+            logger.error(f"youtube_search failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def play_youtube(self, query: str) -> dict:
+        """Show YouTube search results for the query — user chooses what to play."""
+        # No autoplay — just show the results so the user can pick
+        return await self.youtube_search(query)
+
+    async def google_maps_search(self, location: str) -> dict:
+        page = await self._get_page()
+        try:
+            url = f"https://www.google.com/maps/search/{quote_plus(location)}"
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.bring_to_front()
+            await asyncio.sleep(2)
+            return {"success": True, "location": location, "url": page.url}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     async def click(self, selector: str = None, text: str = None) -> dict:
-        await self._ensure_running()
+        page = await self._get_page()
         try:
             if text:
-                element = await self._page.wait_for_selector(f"text={text}", timeout=5000)
+                element = await page.wait_for_selector(f"text={text}", timeout=5000)
             elif selector:
-                element = await self._page.wait_for_selector(selector, timeout=5000)
+                element = await page.wait_for_selector(selector, timeout=5000)
             else:
                 return {"success": False, "error": "Must provide selector or text"}
             await element.click()
@@ -293,9 +270,9 @@ class BrowserAgent:
             return {"success": False, "error": str(e)}
 
     async def type_text(self, selector: str, text: str, clear_first: bool = True) -> dict:
-        await self._ensure_running()
+        page = await self._get_page()
         try:
-            element = await self._page.wait_for_selector(selector, timeout=5000)
+            element = await page.wait_for_selector(selector, timeout=5000)
             await element.click()
             if clear_first:
                 await element.fill("")
@@ -305,18 +282,18 @@ class BrowserAgent:
             return {"success": False, "error": str(e)}
 
     async def scroll(self, direction: str = "down", amount: int = 400) -> dict:
-        await self._ensure_running()
+        page = await self._get_page()
         try:
             delta = amount if direction == "down" else -amount
-            await self._page.evaluate(f"window.scrollBy(0, {delta})")
+            await page.evaluate(f"window.scrollBy(0, {delta})")
             return {"success": True, "direction": direction}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     async def get_page_text(self) -> dict:
-        await self._ensure_running()
+        page = await self._get_page()
         try:
-            text = await self._page.evaluate("""
+            text = await page.evaluate("""
                 () => {
                     const els = document.querySelectorAll('p,h1,h2,h3,h4,li,td,span');
                     const seen = new Set();
@@ -328,14 +305,14 @@ class BrowserAgent:
                     return out.slice(0, 100).join('\\n');
                 }
             """)
-            return {"success": True, "text": text[:3000], "url": self._page.url}
+            return {"success": True, "text": text[:3000], "url": page.url}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     async def screenshot(self) -> dict:
-        await self._ensure_running()
+        page = await self._get_page()
         try:
-            img_bytes = await self._page.screenshot(type="png")
+            img_bytes = await page.screenshot(type="png")
             return {"success": True, "image_base64": base64.b64encode(img_bytes).decode()}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -353,9 +330,9 @@ class BrowserAgent:
             return ""
 
     async def fill_form_field(self, label_text: str, value: str) -> dict:
-        await self._ensure_running()
+        page = await self._get_page()
         try:
-            filled = await self._page.evaluate("""
+            filled = await page.evaluate("""
                 (labelText, value) => {
                     const label = Array.from(document.querySelectorAll('label'))
                         .find(l => l.textContent.toLowerCase().includes(labelText.toLowerCase()));
@@ -378,31 +355,7 @@ class BrowserAgent:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def youtube_search(self, query: str) -> dict:
-        await self._ensure_running()
-        try:
-            query = query.strip().rstrip('.,!?')
-            url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
-            await self._page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            await self._page.bring_to_front()
-            await asyncio.sleep(1)
-            return {"success": True, "query": query, "url": self._page.url}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    async def google_maps_search(self, location: str) -> dict:
-        await self._ensure_running()
-        try:
-            url = f"https://www.google.com/maps/search/{quote_plus(location)}"
-            await self._page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            await self._page.bring_to_front()
-            await asyncio.sleep(2)
-            return {"success": True, "location": location, "url": self._page.url}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
     async def execute_step(self, step: dict) -> dict:
-        await self._ensure_running()
         step_type = step.get("type", "general")
         action = step.get("action", "").lower()
         details = step.get("details", "")
@@ -437,3 +390,7 @@ class BrowserAgent:
         except Exception as e:
             logger.error(f"Step execution error: {e}")
             return {"success": False, "error": str(e)}
+
+    # Backward compatibility
+    async def _ensure_running(self):
+        await self._get_page()
