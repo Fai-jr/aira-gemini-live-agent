@@ -103,8 +103,8 @@ class GeminiLiveService:
             logger.info("Connecting to Gemini Live API...")
             self.websocket = await websockets.connect(
                 GEMINI_LIVE_URL,
-                ping_interval=20,
-                ping_timeout=10,
+                ping_interval=None,
+                ping_timeout=None,
                 close_timeout=5,
             )
 

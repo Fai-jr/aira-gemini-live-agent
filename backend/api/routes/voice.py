@@ -227,9 +227,10 @@ async def voice_stream(
 
                 if not browser.is_running:
                     await browser.start(browser=browser_pref)
+                    await asyncio.sleep(2)
 
                 if platform == "youtube":
-                    result = await browser.play_youtube(music_query)
+                    result = await browser.youtube_search(music_query)
                 else:
                     result = await _desktop_agent.open_music(platform, music_query, browser)
 
@@ -290,8 +291,9 @@ async def voice_stream(
                         break
                 if not browser.is_running:
                     await browser.start(browser=browser_pref)
+                    await asyncio.sleep(2)
 
-                if "youtube" in combined and query and "music" not in combined:
+                if "youtube" in combined and query:
                     result = await browser.youtube_search(query)
                 elif url:
                     result = await browser.navigate(url)

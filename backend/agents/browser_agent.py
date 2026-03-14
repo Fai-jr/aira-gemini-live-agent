@@ -11,37 +11,41 @@ logger = logging.getLogger("aira.browser")
 
 os.environ.setdefault("DISPLAY", ":1")
 
+CHROME_BIN     = "/usr/bin/google-chrome"
+CHROME_PROFILE = os.path.expanduser("~/.config/google-chrome-aira")
+
 
 class BrowserAgent:
+
     def __init__(self):
         self._playwright: Optional[Playwright] = None
-        self._browser: Optional[Browser] = None
-        self._context: Optional[BrowserContext] = None
-        self._page: Optional[Page] = None
-        self._is_running = False
-        self._start_lock = asyncio.Lock()
+        self._browser:    Optional[Browser] = None
+        self._context:    Optional[BrowserContext] = None
+        self._page:       Optional[Page] = None
+        self._is_running  = False
+        self._start_lock  = asyncio.Lock()
 
     # ------------------------------------------------------------------ #
     #  INTERNAL HELPERS                                                    #
     # ------------------------------------------------------------------ #
 
-    def _find_executable(self, browser: str) -> str | None:
-        candidates = {
-            "chrome": [
-                "/usr/bin/google-chrome",
-                "/usr/bin/google-chrome-stable",
-                "/usr/bin/chromium-browser",
-                "/usr/bin/chromium",
-            ],
-            "firefox": [
-                "/usr/bin/firefox",
-                "/usr/bin/firefox-esr",
-            ],
-        }
-        for path in candidates.get(browser, []):
+    def _find_executable(self) -> str:
+        for path in [CHROME_BIN, "/usr/bin/google-chrome-stable"]:
             if os.path.exists(path):
                 return path
-        return None
+        raise FileNotFoundError("Google Chrome not found")
+
+    async def _activate_audio(self):
+        """Simulate real user gesture to unlock autoplay."""
+        try:
+            if self._page:
+                await self._page.mouse.click(640, 400)
+                await asyncio.sleep(0.3)
+                await self._page.keyboard.press("k")
+                await asyncio.sleep(0.2)
+                await self._page.keyboard.press("k")  # toggle back if paused
+        except Exception:
+            pass
 
     async def _is_page_alive(self) -> bool:
         if not self._page:
@@ -58,9 +62,7 @@ class BrowserAgent:
                 await self._page.bring_to_front()
             await asyncio.sleep(0.3)
             for cmd in [
-                ["wmctrl", "-a", "Chromium"],
                 ["wmctrl", "-a", "Chrome"],
-                ["xdotool", "search", "--name", "Chromium", "windowactivate"],
                 ["xdotool", "search", "--name", "Chrome", "windowactivate"],
             ]:
                 try:
@@ -72,8 +74,8 @@ class BrowserAgent:
                     )
                 except FileNotFoundError:
                     pass
-        except Exception as e:
-            logger.debug(f"bring_to_front: {e}")
+        except Exception:
+            pass
 
     async def _cleanup_dead(self):
         for obj, method in [
@@ -87,25 +89,46 @@ class BrowserAgent:
             except Exception:
                 pass
         self._playwright = None
-        self._browser = None
-        self._context = None
-        self._page = None
+        self._browser    = None
+        self._context    = None
+        self._page       = None
         self._is_running = False
 
     async def _get_page(self) -> Page:
-        """Return the single active page, starting the browser if needed. Never creates extra tabs."""
         async with self._start_lock:
             if not await self._is_page_alive():
-                logger.info("Page not alive — starting browser...")
+                logger.info("Page not alive — (re)starting browser...")
                 await self._cleanup_dead()
                 await self._start_internal()
             return self._page
 
-    async def _start_internal(self, browser: str = "chromium"):
-        os.environ["DISPLAY"] = os.environ.get("DISPLAY", ":1")
-        self._playwright = await async_playwright().start()
+    async def _ensure_profile(self):
+        """Copy real Chrome profile if the AIRA copy doesn't exist yet."""
+        real = os.path.expanduser("~/.config/google-chrome")
+        if not os.path.exists(CHROME_PROFILE):
+            if os.path.exists(real):
+                logger.info(f"Copying Chrome profile to {CHROME_PROFILE} ...")
+                subprocess.run(["cp", "-r", real, CHROME_PROFILE],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                logger.info("Profile copy done")
+            else:
+                os.makedirs(CHROME_PROFILE, exist_ok=True)
 
-        common_args = [
+    async def _start_internal(self, browser: str = "chrome"):
+        os.environ["DISPLAY"] = os.environ.get("DISPLAY", ":1")
+
+        # Make sure a profile exists that Playwright can use
+        await self._ensure_profile()
+
+        # Kill any Chrome holding the profile lock
+        subprocess.run(["pkill", "-f", "google-chrome"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await asyncio.sleep(2)
+
+        self._playwright = await async_playwright().start()
+        executable = self._find_executable()
+
+        args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--start-maximized",
@@ -119,53 +142,64 @@ class BrowserAgent:
             "--enable-audio",
             "--allow-running-insecure-content",
             "--use-fake-ui-for-media-stream",
+            "--disable-web-security",
         ]
 
-        executable = self._find_executable(browser) if browser != "chromium" else None
+        env = {
+            "DISPLAY":                  os.environ.get("DISPLAY", ":1"),
+            "XDG_RUNTIME_DIR":          os.environ.get("XDG_RUNTIME_DIR",
+                                            f"/run/user/{os.getuid()}"),
+            "HOME":                     os.path.expanduser("~"),
+            "USER":                     os.environ.get("USER", ""),
+            "DBUS_SESSION_BUS_ADDRESS": os.environ.get("DBUS_SESSION_BUS_ADDRESS", ""),
+        }
 
-        if browser == "firefox" and executable:
-            self._browser = await self._playwright.firefox.launch(
-                headless=False,
-                executable_path=executable,
-                env={"DISPLAY": os.environ.get("DISPLAY", ":1")},
-            )
-            self._context = await self._browser.new_context(viewport=None)
-        else:
-            self._browser = await self._playwright.chromium.launch(
-                headless=False,
-                executable_path=executable,
-                env={"DISPLAY": os.environ.get("DISPLAY", ":1")},
-                args=common_args,
-            )
-            self._context = await self._browser.new_context(
-                viewport=None,
-                user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                ),
-                locale="en-US",
-                timezone_id="America/New_York",
-                permissions=["geolocation"],
-                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-            )
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            user_data_dir=CHROME_PROFILE,
+            executable_path=executable,
+            headless=False,
+            args=args,
+            env=env,
+            viewport=None,
+            locale="en-US",
+            timezone_id="America/New_York",
+            permissions=["geolocation", "microphone", "camera"],
+            ignore_default_args=["--enable-automation"],
+        )
 
+        self._browser = self._context.browser
+
+        # Hide automation fingerprint on every page
         await self._context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            Object.defineProperty(navigator, 'plugins',   { get: () => [1,2,3,4,5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US','en'] });
             window.chrome = { runtime: {} };
         """)
 
-        self._page = await self._context.new_page()
+        await asyncio.sleep(1)
+
+        # Reuse first tab, close extras
+        pages = self._context.pages
+        if pages:
+            self._page = pages[0]
+            for extra in pages[1:]:
+                try:
+                    await extra.close()
+                except Exception:
+                    pass
+        else:
+            self._page = await self._context.new_page()
+
         self._is_running = True
         await self._bring_to_front()
-        logger.info(f"Browser started ({browser}) on DISPLAY={os.environ.get('DISPLAY')}")
+        logger.info(f"Chrome started | profile={CHROME_PROFILE}")
 
     # ------------------------------------------------------------------ #
     #  PUBLIC API                                                          #
     # ------------------------------------------------------------------ #
 
-    async def start(self, browser: str = "chromium") -> bool:
+    async def start(self, browser: str = "chrome") -> bool:
         try:
             async with self._start_lock:
                 if await self._is_page_alive():
@@ -203,8 +237,10 @@ class BrowserAgent:
         try:
             if not url.startswith("http"):
                 url = f"https://{url}"
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
             await page.bring_to_front()
+            await asyncio.sleep(1)
+            await self._activate_audio()
             title = await page.title()
             return {"success": True, "url": page.url, "title": title}
         except Exception as e:
@@ -215,7 +251,7 @@ class BrowserAgent:
         try:
             query = query.strip().rstrip('.,!?')
             url = f"https://www.google.com/search?q={quote_plus(query)}"
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
             await page.bring_to_front()
             title = await page.title()
             return {"success": True, "query": query, "url": page.url, "title": title}
@@ -223,31 +259,44 @@ class BrowserAgent:
             return {"success": False, "error": str(e)}
 
     async def youtube_search(self, query: str) -> dict:
-        """Show YouTube search results — user picks what to play."""
+        """Search YouTube and auto-click first result so it plays with audio."""
+        query = query.strip().rstrip('.,!?')
+        url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+        logger.info(f"YouTube search → {url}")
+
         page = await self._get_page()
         try:
-            query = query.strip().rstrip('.,!?')
-            url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
-            logger.info(f"YouTube search: {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
             await page.bring_to_front()
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
+
+            # Click the first video result
+            first = await page.query_selector("ytd-video-renderer a#video-title")
+            if first:
+                await first.click()
+                await asyncio.sleep(3)
+                await self._activate_audio()
+                logger.info("Clicked first YouTube result + activated audio")
+            else:
+                logger.warning("No video result selector found — showing results page")
+
             title = await page.title()
             return {"success": True, "query": query, "url": page.url, "title": title}
+
         except Exception as e:
             logger.error(f"youtube_search failed: {e}")
+            self._page = None  # force fresh page on next call
             return {"success": False, "error": str(e)}
 
     async def play_youtube(self, query: str) -> dict:
-        """Show YouTube search results for the query — user chooses what to play."""
-        # No autoplay — just show the results so the user can pick
+        """Alias — plays first YouTube result."""
         return await self.youtube_search(query)
 
     async def google_maps_search(self, location: str) -> dict:
         page = await self._get_page()
         try:
             url = f"https://www.google.com/maps/search/{quote_plus(location)}"
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
             await page.bring_to_front()
             await asyncio.sleep(2)
             return {"success": True, "location": location, "url": page.url}
@@ -300,7 +349,9 @@ class BrowserAgent:
                     const out = [];
                     for (const el of els) {
                         const t = el.innerText?.trim();
-                        if (t && t.length > 10 && !seen.has(t)) { seen.add(t); out.push(t); }
+                        if (t && t.length > 10 && !seen.has(t)) {
+                            seen.add(t); out.push(t);
+                        }
                     }
                     return out.slice(0, 100).join('\\n');
                 }
@@ -335,13 +386,15 @@ class BrowserAgent:
             filled = await page.evaluate("""
                 (labelText, value) => {
                     const label = Array.from(document.querySelectorAll('label'))
-                        .find(l => l.textContent.toLowerCase().includes(labelText.toLowerCase()));
+                        .find(l => l.textContent.toLowerCase()
+                        .includes(labelText.toLowerCase()));
                     if (label) {
-                        const input = label.control || document.getElementById(label.htmlFor)
+                        const input = label.control
+                            || document.getElementById(label.htmlFor)
                             || label.querySelector('input,textarea,select');
                         if (input) {
                             input.value = value;
-                            input.dispatchEvent(new Event('input', {bubbles:true}));
+                            input.dispatchEvent(new Event('input',  {bubbles:true}));
                             input.dispatchEvent(new Event('change', {bubbles:true}));
                             return true;
                         }
@@ -357,29 +410,23 @@ class BrowserAgent:
 
     async def execute_step(self, step: dict) -> dict:
         step_type = step.get("type", "general")
-        action = step.get("action", "").lower()
-        details = step.get("details", "")
-
+        action    = step.get("action", "").lower()
+        details   = step.get("details", "")
         try:
             if step_type == "browser" or any(w in action for w in ["open", "navigate", "go to"]):
-                url = details if details.startswith("http") else f"https://{details}" if details else "https://google.com"
+                url = (details if details.startswith("http")
+                       else f"https://{details}" if details else "https://google.com")
                 return await self.navigate(url)
             elif step_type == "search" or "search" in action:
-                query = details or action.replace("search for", "").replace("search", "").strip()
-                if "youtube" in action or "youtube" in details:
+                query = details or action.replace("search for","").replace("search","").strip()
+                if "youtube" in action or "youtube" in details.lower():
                     return await self.youtube_search(query)
-                elif "maps" in action or "maps" in details:
+                elif "maps" in action or "maps" in details.lower():
                     return await self.google_maps_search(query)
                 else:
                     return await self.search_google(query)
-            elif step_type == "form_fill" or any(w in action for w in ["fill", "type", "enter"]):
-                if details:
-                    parts = details.split(":", 1)
-                    if len(parts) == 2:
-                        return await self.fill_form_field(parts[0].strip(), parts[1].strip())
-                return {"success": True, "skipped": True}
             elif any(w in action for w in ["click", "select", "press"]):
-                target = details or action.replace("click", "").replace("select", "").strip()
+                target = details or action.replace("click","").replace("select","").strip()
                 return await self.click(text=target)
             elif "scroll" in action:
                 return await self.scroll("down" if "down" in action else "up")
