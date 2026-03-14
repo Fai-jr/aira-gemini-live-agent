@@ -41,9 +41,6 @@ class BrowserAgent:
             if self._page:
                 await self._page.mouse.click(640, 400)
                 await asyncio.sleep(0.3)
-                await self._page.keyboard.press("k")
-                await asyncio.sleep(0.2)
-                await self._page.keyboard.press("k")  # toggle back if paused
         except Exception:
             pass
 
@@ -116,11 +113,8 @@ class BrowserAgent:
 
     async def _start_internal(self, browser: str = "chrome"):
         os.environ["DISPLAY"] = os.environ.get("DISPLAY", ":1")
-
-        # Make sure a profile exists that Playwright can use
         await self._ensure_profile()
 
-        # Kill any Chrome holding the profile lock
         subprocess.run(["pkill", "-f", "google-chrome"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         await asyncio.sleep(2)
@@ -129,7 +123,6 @@ class BrowserAgent:
         executable = self._find_executable()
 
         args = [
-            "--no-sandbox",
             "--disable-dev-shm-usage",
             "--start-maximized",
             "--disable-infobars",
@@ -169,7 +162,6 @@ class BrowserAgent:
 
         self._browser = self._context.browser
 
-        # Hide automation fingerprint on every page
         await self._context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'plugins',   { get: () => [1,2,3,4,5] });
@@ -179,7 +171,6 @@ class BrowserAgent:
 
         await asyncio.sleep(1)
 
-        # Reuse first tab, close extras
         pages = self._context.pages
         if pages:
             self._page = pages[0]
@@ -263,14 +254,12 @@ class BrowserAgent:
         query = query.strip().rstrip('.,!?')
         url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
         logger.info(f"YouTube search → {url}")
-
         page = await self._get_page()
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=25000)
             await page.bring_to_front()
             await asyncio.sleep(2)
 
-            # Click the first video result
             first = await page.query_selector("ytd-video-renderer a#video-title")
             if first:
                 await first.click()
@@ -278,19 +267,105 @@ class BrowserAgent:
                 await self._activate_audio()
                 logger.info("Clicked first YouTube result + activated audio")
             else:
-                logger.warning("No video result selector found — showing results page")
+                logger.warning("No video result found — showing results page")
 
             title = await page.title()
             return {"success": True, "query": query, "url": page.url, "title": title}
-
         except Exception as e:
             logger.error(f"youtube_search failed: {e}")
-            self._page = None  # force fresh page on next call
+            self._page = None
             return {"success": False, "error": str(e)}
 
     async def play_youtube(self, query: str) -> dict:
         """Alias — plays first YouTube result."""
         return await self.youtube_search(query)
+
+    async def spotify_search(self, query: str) -> dict:
+        """Search Spotify and auto-click first track result."""
+        query = query.strip().rstrip('.,!?')
+        url = f"https://open.spotify.com/search/{quote_plus(query)}"
+        logger.info(f"Spotify search → {url}")
+        page = await self._get_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            await page.bring_to_front()
+            await asyncio.sleep(3)
+
+            # Wait for search results to load fully
+            await asyncio.sleep(2)
+
+            played = False
+            try:
+                # Find all track rows in the search results (not liked songs)
+                # Spotify search results show tracks under a "Songs" section
+                rows = await page.query_selector_all("div[data-testid='tracklist-row']")
+                logger.info(f"Spotify: found {len(rows)} track rows")
+
+                if rows:
+                    # Click the first row to select it, then double-click to play
+                    await rows[0].click()
+                    await asyncio.sleep(0.3)
+                    await rows[0].dblclick()
+                    await asyncio.sleep(1)
+                    played = True
+                    logger.info("Spotify: double-clicked first search result track")
+            except Exception as e:
+                logger.warning(f"Spotify row click failed: {e}")
+
+            if not played:
+                try:
+                    # Fallback: click the play button in the top bar if visible
+                    btn = await page.query_selector("button[data-testid='play-button']")
+                    if btn:
+                        await btn.click()
+                        played = True
+                        logger.info("Spotify: clicked play-button fallback")
+                except Exception:
+                    pass
+
+            title = await page.title()
+            return {"success": True, "query": query, "url": page.url, "title": title}
+        except Exception as e:
+            logger.error(f"spotify_search failed: {e}")
+            self._page = None
+            return {"success": False, "error": str(e)}
+
+    async def apple_music_search(self, query: str) -> dict:
+        """Search Apple Music and auto-click first track result."""
+        query = query.strip().rstrip('.,!?')
+        url = f"https://music.apple.com/us/search?term={quote_plus(query)}"
+        logger.info(f"Apple Music search → {url}")
+        page = await self._get_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            await page.bring_to_front()
+            await asyncio.sleep(3)
+
+            played = False
+            selectors = [
+                "button.product-lockup__play-button",
+                "button[aria-label='Play']",
+                ".track-lockup__play-button",
+                "li.songs-list-row button",
+            ]
+            for sel in selectors:
+                try:
+                    el = await page.wait_for_selector(sel, timeout=3000)
+                    if el:
+                        await el.click()
+                        await asyncio.sleep(1)
+                        played = True
+                        logger.info(f"Apple Music auto-clicked: {sel}")
+                        break
+                except Exception:
+                    continue
+
+            title = await page.title()
+            return {"success": True, "query": query, "url": page.url, "title": title}
+        except Exception as e:
+            logger.error(f"apple_music_search failed: {e}")
+            self._page = None
+            return {"success": False, "error": str(e)}
 
     async def google_maps_search(self, location: str) -> dict:
         page = await self._get_page()
@@ -418,15 +493,19 @@ class BrowserAgent:
                        else f"https://{details}" if details else "https://google.com")
                 return await self.navigate(url)
             elif step_type == "search" or "search" in action:
-                query = details or action.replace("search for","").replace("search","").strip()
+                query = details or action.replace("search for", "").replace("search", "").strip()
                 if "youtube" in action or "youtube" in details.lower():
                     return await self.youtube_search(query)
+                elif "spotify" in action or "spotify" in details.lower():
+                    return await self.spotify_search(query)
+                elif "apple music" in action or "apple music" in details.lower():
+                    return await self.apple_music_search(query)
                 elif "maps" in action or "maps" in details.lower():
                     return await self.google_maps_search(query)
                 else:
                     return await self.search_google(query)
             elif any(w in action for w in ["click", "select", "press"]):
-                target = details or action.replace("click","").replace("select","").strip()
+                target = details or action.replace("click", "").replace("select", "").strip()
                 return await self.click(text=target)
             elif "scroll" in action:
                 return await self.scroll("down" if "down" in action else "up")
@@ -438,6 +517,5 @@ class BrowserAgent:
             logger.error(f"Step execution error: {e}")
             return {"success": False, "error": str(e)}
 
-    # Backward compatibility
     async def _ensure_running(self):
         await self._get_page()

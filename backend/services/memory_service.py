@@ -162,6 +162,9 @@ class MemoryService:
 
             for item in memories_data:
                 memory_type = item.get("type", "fact")
+                # Only store name/identity facts — skip search habits and preferences
+                if memory_type in ("habit", "preference"):
+                    continue
                 key = item.get("key")
                 content = item.get("content", "")
 

@@ -229,10 +229,12 @@ async def voice_stream(
                     await browser.start(browser=browser_pref)
                     await asyncio.sleep(2)
 
-                if platform == "youtube":
-                    result = await browser.youtube_search(music_query)
+                if platform == "spotify":
+                    result = await browser.spotify_search(music_query)
+                elif platform in ("apple music", "apple_music"):
+                    result = await browser.apple_music_search(music_query)
                 else:
-                    result = await _desktop_agent.open_music(platform, music_query, browser)
+                    result = await browser.youtube_search(music_query)
 
                 if result.get("success"):
                     await browser.keep_alive()
