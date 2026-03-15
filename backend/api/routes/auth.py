@@ -11,9 +11,6 @@ from models.user import User
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-# --------------------------------------------------------------------------
-# Request / Response Schemas
-# --------------------------------------------------------------------------
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -69,10 +66,6 @@ class UpdateProfileRequest(BaseModel):
     language: str | None = None
     timezone: str | None = None
 
-
-# --------------------------------------------------------------------------
-# Routes
-# --------------------------------------------------------------------------
 
 @router.post(
     "/register",

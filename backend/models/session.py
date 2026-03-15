@@ -33,7 +33,7 @@ class Session(Base):
         String(30),
         default="voice",
         nullable=False,
-    )  # voice | vision | goal | computer_use
+    )  
 
     # Transcript stored as JSON string (array of message objects)
     transcript: Mapped[str] = mapped_column(Text, default="[]", nullable=False)

@@ -13,10 +13,6 @@ from models.session import Session
 router = APIRouter(prefix="/sessions", tags=["Sessions"])
 
 
-# --------------------------------------------------------------------------
-# Schemas
-# --------------------------------------------------------------------------
-
 class SessionCreateRequest(BaseModel):
     session_type: str = "voice"
 
@@ -48,11 +44,6 @@ class SessionResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-# --------------------------------------------------------------------------
-# Routes
-# --------------------------------------------------------------------------
 
 @router.post(
     "/",

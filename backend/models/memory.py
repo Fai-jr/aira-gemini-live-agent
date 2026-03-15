@@ -28,7 +28,6 @@ class Memory(Base):
         nullable=False,
         index=True,
     )
-    # Types: preference | fact | habit | goal | context | correction
 
     # The actual memory content
     content: Mapped[str] = mapped_column(Text, nullable=False)

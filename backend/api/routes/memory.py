@@ -13,10 +13,6 @@ from models.memory import Memory
 router = APIRouter(prefix="/memory", tags=["Memory"])
 
 
-# --------------------------------------------------------------------------
-# Schemas
-# --------------------------------------------------------------------------
-
 class MemoryCreateRequest(BaseModel):
     memory_type: str
     content: str
@@ -43,10 +39,6 @@ class MemoryResponse(BaseModel):
     class Config:
         from_attributes = True
 
-
-# --------------------------------------------------------------------------
-# Routes
-# --------------------------------------------------------------------------
 
 @router.get(
     "/",

@@ -15,11 +15,6 @@ router = APIRouter(prefix="/vision", tags=["Vision"])
 
 vision_agent = VisionAgent()
 
-
-# --------------------------------------------------------------------------
-# Schemas
-# --------------------------------------------------------------------------
-
 class ScreenshotRequest(BaseModel):
     image_base64: str
     query: Optional[str] = None
@@ -50,10 +45,6 @@ class FindElementRequest(BaseModel):
     image_base64: str
     element_description: str
 
-
-# --------------------------------------------------------------------------
-# Routes
-# --------------------------------------------------------------------------
 
 @router.post(
     "/describe",

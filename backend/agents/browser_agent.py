@@ -25,9 +25,6 @@ class BrowserAgent:
         self._is_running  = False
         self._start_lock  = asyncio.Lock()
 
-    # ------------------------------------------------------------------ #
-    #  INTERNAL HELPERS                                                    #
-    # ------------------------------------------------------------------ #
 
     def _find_executable(self) -> str:
         for path in [CHROME_BIN, "/usr/bin/google-chrome-stable"]:
@@ -186,10 +183,7 @@ class BrowserAgent:
         await self._bring_to_front()
         logger.info(f"Chrome started | profile={CHROME_PROFILE}")
 
-    # ------------------------------------------------------------------ #
-    #  PUBLIC API                                                          #
-    # ------------------------------------------------------------------ #
-
+  
     async def start(self, browser: str = "chrome") -> bool:
         try:
             async with self._start_lock:
@@ -219,9 +213,6 @@ class BrowserAgent:
         except Exception as e:
             logger.debug(f"keep_alive: {e}")
 
-    # ------------------------------------------------------------------ #
-    #  NAVIGATION                                                          #
-    # ------------------------------------------------------------------ #
 
     async def navigate(self, url: str) -> dict:
         page = await self._get_page()

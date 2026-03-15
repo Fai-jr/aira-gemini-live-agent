@@ -203,7 +203,6 @@ async def voice_stream(
         combined = (user_text + " " + full_text).lower()
 
         try:
-            # ── MUSIC ──────────────────────────────────────────────────────
             if action_type == "music":
                 platform = _desktop_agent.detect_music_platform(combined) or "youtube"
                 # Use user_text only — if empty, extract short quoted phrase from full_text
@@ -256,7 +255,7 @@ async def voice_stream(
                     browser_action_fired[0] = False
                     _last_executed_queries.pop(action_key, None)
 
-            # ── APP LAUNCH ─────────────────────────────────────────────────
+          
             elif action_type == "app":
                 app_key = _desktop_agent.detect_app(combined)
                 logger.info(f"App launch: {app_key}")
@@ -280,7 +279,7 @@ async def voice_stream(
                     browser_action_fired[0] = False
                     _last_executed_queries.pop(action_key, None)
 
-            # ── BROWSER SEARCH / NAVIGATE ──────────────────────────────────
+          
             elif action_type == "browser":
                 query = extract_search_query(full_text)
                 url = extract_url(full_text)

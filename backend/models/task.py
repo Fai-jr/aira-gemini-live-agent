@@ -43,7 +43,7 @@ class Task(Base):
         nullable=False,
         index=True,
     )
-    # Status values: pending | in_progress | completed | failed | skipped | cancelled
+  
 
     # Task type determines which agent handles it
     task_type: Mapped[str] = mapped_column(
