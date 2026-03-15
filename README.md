@@ -1,9 +1,8 @@
 <div align="center">
 
-<h1>AIRA — AI Real-time Agent</h1>
+![AIRA Banner](docs/banner.png)
 
-**Control your entire desktop with just your voice.**<br/>
-No mouse. No keyboard. No shortcuts. Just speak naturally — AIRA acts.
+---
 
 [![Gemini Live](https://img.shields.io/badge/Gemini_Live-2.0_Flash-4285F4?style=flat-square&logo=google&logoColor=white)](https://ai.google.dev)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
@@ -14,7 +13,8 @@ No mouse. No keyboard. No shortcuts. Just speak naturally — AIRA acts.
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
----
+**Control your entire desktop with just your voice.**<br/>
+No mouse. No keyboard. No shortcuts. Just speak naturally — AIRA acts.
 
 *Built for the **Gemini Live Agent Challenge 2026***
 
@@ -28,49 +28,13 @@ AIRA is a voice-first AI desktop agent that listens to you in real time and take
 
 Speak naturally. AIRA understands intent, executes multi-step tasks, and remembers facts about you across sessions.
 
-> *"Play Burna Boy on Spotify"* → Spotify opens, searches, and plays automatically  
-> *"Search YouTube for lo-fi beats"* → Chrome opens a new tab and plays the first result  
-> *"Open VS Code"* → VS Code launches in under a second  
-> *"Next song"* → Spotify skips via keyboard control  
-> *"Search Google for FastAPI tutorials"* → Chrome opens with results in a new tab  
-
 ---
 
 ## Architecture
 
-![Architecture](docs/architecture.png)
+![AIRA System Architecture](docs/architecture.png)
 
 AIRA has four layers. The **React frontend** captures microphone audio and streams it over a persistent WebSocket. The **FastAPI backend** classifies the voice intent and routes it to the correct agent — `browser_agent.py` for web tasks or `desktop_agent.py` for app control. **Gemini Live API** handles the bidirectional audio conversation. **PostgreSQL** stores users, session transcripts, and memories.
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│              Frontend  ·  React 19 + TypeScript + Vite       │
-│        Voice UI  │  WebSocket Hook  │  Goal Panel  │  Memory │
-└───────────────────────────┬──────────────────────────────────┘
-                            │  WSS + PCM audio
-┌───────────────────────────▼──────────────────────────────────┐
-│              Backend  ·  FastAPI + Python 3.12               │
-│                                                              │
-│   voice.py  ──►  aira_agent.py  ──►  goal_planner.py        │
-│        │               │                    │               │
-│  gemini_live.py   browser_agent.py   desktop_agent.py       │
-│  (Gemini WSS)     (Playwright)       (xdotool + wmctrl)     │
-│        │               │                    │               │
-│  memory_service.py     └────────────────────┘               │
-│  gemini_vision.py           auth / security.py              │
-└───────────────────────────┬──────────────────────────────────┘
-                            │  SQLAlchemy async
-┌───────────────────────────▼──────────────────────────────────┐
-│              PostgreSQL 16  ·  Alembic migrations            │
-│           users  │  sessions  │  memories (facts only)       │
-└──────────────────────────────────────────────────────────────┘
-         │                                    │
-┌────────▼───────────┐            ┌───────────▼──────────────┐
-│  Gemini Live API   │            │  Google Chrome           │
-│  gemini-2.0-flash  │            │  Playwright CDP          │
-│  Bidi audio+text   │            │  Real user profile       │
-└────────────────────┘            └──────────────────────────┘
-```
 
 ---
 
@@ -156,25 +120,6 @@ AIRA remembers facts about you across sessions — not search history or habits.
 | Corrections you make | Browsing behaviour |
 
 Memory is extracted by Gemini at session end from the transcript. Only `fact` and `correction` types are persisted. `habit` and `preference` types are explicitly filtered out.
-
----
-
-## Supported Apps
-
-AIRA can open 60+ apps. If the desktop app is not installed, it automatically opens the web version in Chrome.
-
-| Category | Apps |
-|---|---|
-| **Code editors** | VS Code, Eclipse, Vim, Notepad++ |
-| **Browsers** | Chrome, Firefox |
-| **Office** | LibreOffice Writer/Calc/Impress, Word → Writer, Excel → Calc |
-| **Music** | Spotify (/snap/bin/spotify), Rhythmbox, YouTube Music |
-| **Communication** | Slack, Telegram, WhatsApp, Thunderbird, Zoom |
-| **Media** | VLC, OBS Studio, OpenShot, Shotwell |
-| **Dev tools** | Postman, MongoDB Compass, pgAdmin 4, gitg |
-| **Google apps** | Gmail, Meet, Drive, Docs, Sheets, Calendar, Maps |
-| **Social** | LinkedIn, Twitter, Instagram, Facebook, Netflix |
-| **Productivity** | Notion, Trello, Figma, Asana, GitHub |
 
 ---
 
@@ -377,7 +322,7 @@ Judges can verify AIRA is fully reproducible by following these steps:
 - [ ] `playwright install chromium` — browser installs cleanly
 - [ ] `alembic upgrade head` — migrations run without errors
 - [ ] `npm install` in `/frontend` — no dependency conflicts
-- [ ] Backend starts on port 8000 with `uvicorn main:app --port 8000`
+- [ ] Backend starts on port 8000 with `DISPLAY=:1 uvicorn main:app --port 8000`
 - [ ] Frontend starts on port 5173 with `npm run dev`
 - [ ] Register a new user and complete a voice session
 - [ ] Say "open Chrome" — browser launches
@@ -448,14 +393,14 @@ firebase deploy --only hosting
 
 ## Why AIRA Stands Out
 
-| Capability | AIRA | Typical voice assistant |
-|---|---|---|
-| Real desktop control | ✅ Opens and controls any installed app | ❌ Web only |
-| Persistent memory | ✅ Facts remembered across sessions | ❌ Session only |
-| Multi-tab browser | ✅ New tab per search, old tabs preserved | ❌ Single tab |
-| App fallback | ✅ Web version if desktop app not installed | ❌ Fails silently |
-| Gesture input | ✅ Webcam scroll control | ❌ None |
-| Music control | ✅ Auto-plays on YouTube, Spotify, Apple Music | ❌ Web search only |
+| Capability | AIRA |
+|---|---|
+| Real desktop control | ✅ Opens and controls any installed app |
+| Persistent memory | ✅ Facts remembered across sessions |
+| Multi-tab browser | ✅ New tab per search, old tabs preserved |
+| App fallback | ✅ Web version if desktop app not installed |
+| Gesture input | ✅ Webcam scroll control |
+| Music control | ✅ Auto-plays on YouTube, Spotify, Apple Music |
 
 ---
 
